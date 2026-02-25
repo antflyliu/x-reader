@@ -6,6 +6,7 @@ The core dispatcher: give it a URL, get back structured content.
 """
 
 import asyncio
+from dataclasses import replace
 from urllib.parse import urlparse
 from loguru import logger
 from typing import Dict, Any, Optional
@@ -16,6 +17,7 @@ from x_reader.schema import (
     from_xiaohongshu, from_youtube, from_rss, from_telegram,
 )
 from x_reader.fetchers.jina import fetch_via_jina
+from x_reader.utils.clean import clean_content, clean_title
 
 
 class UniversalReader:
@@ -66,6 +68,16 @@ class UniversalReader:
 
         try:
             content = await self._fetch(platform, url)
+
+            # 数据清理：移除 Jina 元数据、页面 UI 噪音等
+            # content = replace(
+            #     content,
+            #     title=clean_title(content.title),
+            #     content=clean_content(
+            #         content.content,
+            #         source_type=content.source_type.value,
+            #     ),
+            # )
 
             # Save to inbox if configured
             if self.inbox:

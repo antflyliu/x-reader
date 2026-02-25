@@ -16,6 +16,7 @@ from loguru import logger
 from typing import Dict, Any
 
 from x_reader.fetchers.jina import fetch_via_jina
+from x_reader.utils.format import normalize_twitter_markdown
 
 
 OEMBED_URL = "https://publish.twitter.com/oembed"
@@ -30,6 +31,44 @@ def _extract_author(url: str) -> str:
 def _is_tweet_url(url: str) -> bool:
     """Check if this is a direct tweet/status URL (vs profile or other X page)."""
     return bool(re.search(r'x\.com/\w+/status/\d+', url))
+
+
+def _is_oembed_truncated(text: str) -> bool:
+    """
+    Detect if oEmbed returned truncated tweet content.
+
+    X oEmbed API truncates long tweets (e.g. Premium 25k-char posts).
+    Truncation is indicated by ellipsis (… or ...) in the returned HTML.
+    """
+    if not text or len(text) < 50:
+        return False
+    # Unicode ellipsis (U+2026) — Twitter's standard truncation marker
+    if "\u2026" in text:
+        return True
+    # ASCII ellipsis at end (common fallback)
+    stripped = text.rstrip()
+    if stripped.endswith("..."):
+        return True
+    return False
+
+
+def _is_oembed_link_only(text: str) -> bool:
+    """
+    Detect if oEmbed returned only a link card (no substantive tweet content).
+
+    Link tweets: tweet is just a URL to an article. oEmbed returns
+    "https://t.co/xxx &mdash; Author (@handle) Date" — no article body.
+    We should fallback to Tier 2 (Jina) which may get more from the page.
+    """
+    if not text or len(text) > 200:
+        return False
+    if "t.co" not in text:
+        return False
+    # Strip attribution (— Author (@handle) Date), then strip t.co link
+    rest = re.sub(r"\s*(&mdash;|—)\s*.*$", "", text)
+    rest = re.sub(r"https?://t\.co/\w+", "", rest).strip()
+    # If nothing substantive remains, it's link-only
+    return len(rest) < 30
 
 
 def _fetch_via_oembed(url: str) -> Dict[str, Any]:
@@ -150,20 +189,27 @@ async def fetch_twitter(url: str) -> Dict[str, Any]:
     url = url.replace("twitter.com", "x.com")
     author = _extract_author(url)
 
-    # Tier 1: oEmbed API (best for individual tweets)
+    # Tier 1: oEmbed API (fast, no auth — but truncates long tweets)
     if _is_tweet_url(url):
         try:
             logger.info(f"[Twitter] Tier 1 — oEmbed: {url}")
             data = _fetch_via_oembed(url)
-            if data.get("text") and len(data["text"].strip()) > 20:
-                return {
-                    "text": data["text"],
-                    "author": author or data.get("author", ""),
-                    "url": url,
-                    "title": data.get("title", ""),
-                    "platform": "twitter",
-                }
-            logger.warning("[Twitter] oEmbed returned thin content")
+            text = (data.get("text") or "").strip()
+            if text and len(text) > 20:
+                if _is_oembed_truncated(text):
+                    logger.warning("[Twitter] oEmbed truncated long tweet, falling back to Tier 2")
+                elif _is_oembed_link_only(text):
+                    logger.warning("[Twitter] oEmbed returned link-only card, falling back to Tier 2")
+                else:
+                    return {
+                        "text": data["text"],
+                        "author": author or data.get("author", ""),
+                        "url": url,
+                        "title": data.get("title", ""),
+                        "platform": "twitter",
+                    }
+            if not _is_oembed_truncated(text) and not _is_oembed_link_only(text):
+                logger.warning("[Twitter] oEmbed returned thin content")
         except Exception as e:
             logger.warning(f"[Twitter] oEmbed failed ({e})")
 
@@ -180,6 +226,8 @@ async def fetch_twitter(url: str) -> Dict[str, Any]:
             and title.lower() not in ("x", "title: x", "")
         )
         if jina_ok:
+            # Jina flattens X content; restore Markdown structure (numbered lists, bullets)
+            content = normalize_twitter_markdown(content)
             return {
                 "text": content,
                 "author": author,

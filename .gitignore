@@ -30,3 +30,16 @@ output/
 # IDE
 .vscode/
 .idea/
+
+# docs
+docs/
+
+# Output
+output/
+
+# Specstory
+.specstory/
+
+.cursorindexingignore
+
+unified_inbox.json

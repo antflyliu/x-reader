@@ -6,6 +6,7 @@ Uses https://r.jina.ai/{url} to extract markdown from any web page.
 Free, no API key required, handles JS rendering and anti-scraping.
 """
 
+import re
 import requests
 from loguru import logger
 
@@ -43,6 +44,9 @@ def fetch_via_jina(url: str) -> dict:
             if not title and line.strip():
                 # First non-empty line as title, strip markdown heading
                 title = line.lstrip("#").strip()
+                # Jina 有时返回 "Title: xxx" 格式，去掉此前缀
+                if re.match(r"^Title:\s+", title, re.I):
+                    title = re.sub(r"^Title:\s+", "", title, count=1, flags=re.I).strip()
             else:
                 content_lines.append(line)
 
