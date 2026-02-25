@@ -43,6 +43,9 @@ async def fetch_xhs(url: str) -> Dict[str, Any]:
         logger.warning(f"[XHS] Jina failed ({e}), falling back to browser")
 
     # Tier 2: Playwright with session
+    if "xsec_token" not in url and "xiaohongshu.com/explore/" in url:
+        logger.warning("[XHS] URL missing xsec_token, likely to get 404")
+
     from x_reader.fetchers.browser import get_session_path, SESSION_DIR
 
     session_path = get_session_path("xhs")
@@ -59,6 +62,17 @@ async def fetch_xhs(url: str) -> Dict[str, Any]:
         from x_reader.fetchers.browser import fetch_via_browser
 
         data = await fetch_via_browser(url, storage_state=session_path)
+
+        # Session expiry detection: XHS redirects to /explore or login page
+        final_url = data.get("url", "")
+        if final_url and final_url != url:
+            if final_url.rstrip("/").endswith("/explore") or "login" in final_url:
+                raise RuntimeError(
+                    f"❌ XHS session expired (redirected to {final_url}).\n"
+                    f"   Run: x-reader login xhs\n"
+                    f"   Then retry this URL."
+                )
+
         return {
             "title": data["title"],
             "content": data["content"],

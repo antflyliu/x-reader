@@ -85,10 +85,10 @@ def cmd_clear():
         print("📦 Inbox is already empty")
 
 
-def cmd_login(platform: str):
+def cmd_login(platform: str, headless: bool = False):
     """Open browser for manual login to a platform."""
     from x_reader.login import login
-    login(platform)
+    login(platform, headless=headless)
 
 
 def main():
@@ -119,10 +119,11 @@ Examples:
 
     if cmd == "login":
         if len(sys.argv) < 3:
-            print("❌ Usage: x-reader login <platform>")
+            print("❌ Usage: x-reader login <platform> [--headless]")
             print("   Supported: xhs, wechat")
             sys.exit(1)
-        cmd_login(sys.argv[2])
+        headless = "--headless" in sys.argv
+        cmd_login(sys.argv[2], headless=headless)
     elif cmd == "list":
         cmd_list()
     elif cmd == "clear":

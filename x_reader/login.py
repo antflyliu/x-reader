@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-Login manager — opens a visible browser for manual login, saves session.
+Login manager — opens a browser for manual login, saves session.
 
 Usage:
-    x-reader login xhs       # Login to Xiaohongshu
-    x-reader login wechat     # Login to WeChat (if needed)
+    x-reader login xhs              # Visible browser login
+    x-reader login xhs --headless   # Headless: saves QR screenshot for scanning
 
 Sessions are saved as Playwright storage_state JSON files.
 """
 
+import os
+import time
 from pathlib import Path
 from loguru import logger
 
@@ -23,13 +25,30 @@ PLATFORM_URLS = {
 }
 
 
-def login(platform: str) -> None:
+def _save_session(context, session_path: Path) -> None:
+    """Save session and set restrictive permissions."""
+    context.storage_state(path=str(session_path))
+    os.chmod(str(session_path), 0o600)
+    logger.info(f"Session saved: {session_path}")
+    print(f"\n✅ Session saved to {session_path}")
+
+
+def _resolve_canonical(platform: str) -> str:
+    if platform in ("xhs", "xiaohongshu"):
+        return "xhs"
+    if platform in ("twitter", "x"):
+        return "twitter"
+    return platform
+
+
+def login(platform: str, headless: bool = False) -> None:
     """
-    Open a visible browser for the user to log in manually.
+    Open a browser for the user to log in manually.
     After login, saves cookies/localStorage to a session file.
 
     Args:
         platform: Platform key (e.g. 'xhs', 'wechat')
+        headless: If True, run headless and save QR screenshot for user to scan
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -50,22 +69,29 @@ def login(platform: str) -> None:
         return
 
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
-    session_path = SESSION_DIR / f"{platform}.json"
-    # Normalize alias to canonical name
-    if platform in ("xhs", "xiaohongshu"):
-        canonical = "xhs"
-    elif platform in ("twitter", "x"):
-        canonical = "twitter"
-    else:
-        canonical = platform
+    canonical = _resolve_canonical(platform)
     session_path = SESSION_DIR / f"{canonical}.json"
+
+    if headless:
+        _login_headless(login_url, session_path, canonical)
+    else:
+        _login_visible(login_url, session_path, platform)
+
+
+def _login_visible(login_url: str, session_path: Path, platform: str) -> None:
+    from playwright.sync_api import sync_playwright
 
     print(f"🌐 Opening {platform} login page: {login_url}")
     print("   Please log in manually in the browser window.")
     print("   When done, close the browser or press Ctrl+C.\n")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        # Prefer real Chrome channel over bundled Chromium to reduce login friction.
+        browser = p.chromium.launch(
+            headless=False,
+            channel="chrome",
+            args=["--disable-blink-features=AutomationControlled"],
+        )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                        "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -75,17 +101,65 @@ def login(platform: str) -> None:
         page.goto(login_url)
 
         try:
-            # Wait for user to log in — blocks until browser is closed
-            page.wait_for_event("close", timeout=300_000)  # 5 min max
+            page.wait_for_event("close", timeout=300_000)
         except KeyboardInterrupt:
             pass
         except Exception:
-            pass  # Browser closed by user
+            pass
 
-        # Save session regardless of how we got here
-        context.storage_state(path=str(session_path))
-        logger.info(f"Session saved: {session_path}")
-        print(f"\n✅ Session saved to {session_path}")
+        _save_session(context, session_path)
+        context.close()
+        browser.close()
+
+
+def _login_headless(login_url: str, session_path: Path, canonical: str) -> None:
+    from playwright.sync_api import sync_playwright
+
+    qr_path = SESSION_DIR / f"{canonical}_qr.png"
+
+    print(f"🔐 Headless login: {login_url}")
+    print(f"   QR code will be saved to: {qr_path}")
+    print("   Waiting for login (timeout: 5 min)...\n")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/120.0.0.0 Safari/537.36",
+        )
+        page = context.new_page()
+        page.goto(login_url, wait_until="domcontentloaded")
+        page.wait_for_timeout(3000)
+
+        # Save QR screenshot
+        page.screenshot(path=str(qr_path))
+        print(f"📸 QR screenshot saved: {qr_path}")
+        print("   Open this image and scan the QR code with your phone.\n")
+
+        # Poll for cookie change (login detection)
+        initial_cookies = len(context.cookies())
+        timeout = 300  # 5 min
+        start = time.time()
+        logged_in = False
+
+        try:
+            while time.time() - start < timeout:
+                time.sleep(3)
+                current_cookies = len(context.cookies())
+                if current_cookies > initial_cookies + 2:
+                    logger.info(f"Cookie count changed: {initial_cookies} -> {current_cookies}")
+                    # Wait a bit more for all cookies to settle
+                    page.wait_for_timeout(2000)
+                    logged_in = True
+                    break
+        except KeyboardInterrupt:
+            pass
+
+        if logged_in:
+            _save_session(context, session_path)
+        else:
+            print("\n⏹ Login timed out or cancelled. No session saved.")
 
         context.close()
         browser.close()

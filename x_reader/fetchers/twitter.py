@@ -123,7 +123,11 @@ async def _fetch_via_playwright(url: str) -> Dict[str, Any]:
         logger.info(f"Using saved X session: {session_path}")
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(
+            headless=True,
+            channel="chrome",
+            args=["--disable-blink-features=AutomationControlled"],
+        )
 
         context_kwargs = {}
         if has_session:
@@ -195,6 +199,7 @@ async def fetch_twitter(url: str) -> Dict[str, Any]:
             logger.info(f"[Twitter] Tier 1 — oEmbed: {url}")
             data = _fetch_via_oembed(url)
             text = (data.get("text") or "").strip()
+            
             if text and len(text) > 20:
                 if _is_oembed_truncated(text):
                     logger.warning("[Twitter] oEmbed truncated long tweet, falling back to Tier 2")
@@ -202,7 +207,7 @@ async def fetch_twitter(url: str) -> Dict[str, Any]:
                     logger.warning("[Twitter] oEmbed returned link-only card, falling back to Tier 2")
                 else:
                     return {
-                        "text": data["text"],
+                        "text": text,
                         "author": author or data.get("author", ""),
                         "url": url,
                         "title": data.get("title", ""),
@@ -210,6 +215,23 @@ async def fetch_twitter(url: str) -> Dict[str, Any]:
                     }
             if not _is_oembed_truncated(text) and not _is_oembed_link_only(text):
                 logger.warning("[Twitter] oEmbed returned thin content")
+            
+            # Some oEmbed responses are only a t.co stub + author/date.
+            # thin_oembed = (
+            #     len(text) <= 20
+            #     or text.lower().startswith("https://t.co/")
+            #     or ("&mdash;" in text and text.count("https://t.co/") >= 1)
+            # )
+            # if not thin_oembed:
+            #     return {
+            #         "text": text,
+            #         "author": author or data.get("author", ""),
+            #         "url": url,
+            #         "title": data.get("title", ""),
+            #         "platform": "twitter",
+            #     }
+            # logger.warning("[Twitter] oEmbed returned thin content")
+        
         except Exception as e:
             logger.warning(f"[Twitter] oEmbed failed ({e})")
 
